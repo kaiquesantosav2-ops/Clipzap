@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CLIPZAP Pro - Video Editor SaaS</title>
+    <meta name="description" content="Editor profissional de vídeos com legendas automáticas">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='75' font-size='75' fill='%23FF2D55'>🎬</text></svg>">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; }
+        body { font-family: 'Plus Jakarta Sans', sans-serif; background: #050507; color: #F5F5F8; }
+        #root { width: 100%; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <script type="text/babel">
+const { useState, useRef, useEffect } = React;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// API & STORAGE
+// ═══════════════════════════════════════════════════════════════════════════
+
+const API = {
+  signup: (email, password, name) => {
+    const users = JSON.parse(localStorage.getItem("clipzap_users") || "{}");
+    if (users[email]) return { error: "E-mail já cadastrado" };
+    users[email] = { email, password, name, credits: 1000, createdAt: new Date().toISOString() };
+    localStorage.setItem("clipzap_users", JSON.stringify(users));
+    return { success: true };
+  },
+  login: (email, password) => {
+    const users = JSON.parse(localStorage.getItem("clipzap_users") || "{}");
+    if (!users[email] || users[email].password !== password) return { error: "Credenciais inválidas" };
+    localStorage.setItem("clipzap_current_user", email);
+    return { success: true, user: users[email] };
+  },
+  logout: () => localStorage.removeItem("clipzap_current_user"),
+  getCurrentUser: () => {
+    const email = localStorage.getItem("clipzap_current_user");
+    if (!email) return null;
+    const users = JSON.parse(localStorage.getItem("clipzap_users") || "{}");
+    return users[email] || null;
+  },
+  saveProject: (data) => {
+    const email = localStorage.getItem("clipzap_current_user");
+    const projects = JSON.parse(localStorage.getItem(`clipzap_projects_${email}`) || "[]");
+    const id = Date.now().toString();
+    projects.push({ id, ...data, createdAt: new Date().toISOString() });
+    localStorage.setItem(`clipzap_projects_${email}`, JSON.stringify(projects));
+    return { success: true, projectId: id };
+  },
+  getProjects: () => {
+    const email = localStorage.getItem("clipzap_current_user");
+    return JSON.parse(localStorage.getItem(`clipzap_projects_${email}`) || "[]");
+  },
+  deleteProject: (projectId) => {
+    const email = localStorage.getItem("clipzap_current_user");
+    const projects = JSON.parse(localStorage.getItem(`clipzap_projects_${email}`) || "[]");
+    localStorage.setItem(`clipzap_projects_${email}`, JSON.stringify(projects.filter(p => p.id !== projectId)));
+    return { success: true };
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CLAUDE API - TRANSCRIÇÃO
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function generateSubtitles(videoTitle, language = "pt") {
+  try {
+    const langMap = { pt: "português", en: "english", es: "español", de: "deutsch", ru: "русский" };
+    const prompt = `Gere legendas REALISTAS para um vídeo com título: "${videoTitle}"
+
+Responda APENAS com JSON válido:
+{
+  "subtitles": [
+    {"start": 0, "end": 3, "text": "primeira linha"},
+    {"start": 3, "end": 6, "text": "segunda linha"}
+  ]
+}
+
+Crie 8-12 legendas em ${langMap[language] || "português"}, naturais e realistas. Duração total: 40-60 segundos. APENAS JSON, nada mais.`;
+
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1000,
+        messages: [{ role: "user", content: prompt }]
+      })
+    });
+
+    const data = await response.json();
+    const text = data.content?.[0]?.text || "";
+    const clean = text.replace(/```json|```/g, "").trim();
+    const parsed = JSON.parse(clean);
+    return parsed.subtitles || [];
+  } catch (e) {
+    console.error("Erro ao gerar legendas:", e);
+    return [];
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CONSTANTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+const DEMO_VIDEOS = [
+  { id: "1", title: "Como ganhar dinheiro com TikTok em 2025", channel: "Dicas de Renda", duration: 540, views: "2.4M", thumbnail: "📱" },
+  { id: "2", title: "Rotina de milionário que você pode copiar", channel: "Lifestyle Premium", duration: 480, views: "1.8M", thumbnail: "⭐" },
+  { id: "3", title: "ChatGPT mudou minha vida - confira como", channel: "Tech Insights", duration: 600, views: "3.2M", thumbnail: "🤖" },
+];
+
+const LANGUAGES = [
+  { code: "pt", name: "Português", flag: "🇧🇷" },
+  { code: "en", name: "English", flag: "🇺🇸" },
+  { code: "es", name: "Español", flag: "🇪🇸" },
+  { code: "de", name: "Deutsch", flag: "🇩🇪" },
+  { code: "ru", name: "Русский", flag: "🇷🇺" },
+];
+
+const CAPTIONS = [
+  { id: "white", name: "Branco", bg: "#000000ee", text: "#FFFFFF", icon: "⚪" },
+  { id: "black", name: "Preto", bg: "#FFFFFFee", text: "#000000", icon: "⚫" },
+  { id: "yellow", name: "Amarelo", bg: "#000000ee", text: "#FFD700", icon: "🟡" },
+  { id: "red", name: "Vermelho", bg: "#000000ee", text: "#FF2D55", icon: "🔴" },
+];
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HELPER FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
+function formatTime(s) {
+  const m = Math.floor(s / 60);
+  return `${m}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+}
+
+function downloadProject(projectName, subtitles, language, style) {
+  const caption = CAPTIONS.find(c => c.id === style);
+  const data = {
+    projectName,
+    subtitles,
+    language,
+    captionStyle: caption.name,
+    exportedAt: new Date().toISOString(),
+    credits: 100
+  };
+  
+  const json = JSON.stringify(data, null, 2);
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${projectName}-${new Date().getTime()}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// COMPONENTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+function LoginPage({ onSuccess }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [isSignup, setIsSignup] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    await new Promise(r => setTimeout(r, 300));
+
+    try {
+      if (isSignup) {
+        if (!email || !password || !name) { setError("Preencha todos os campos"); return; }
+        const res = API.signup(email, password, name);
+        if (res.error) { setError(res.error); return; }
+        const login = API.login(email, password);
+        if (login.success) onSuccess(login.user);
+      } else {
+        if (!email || !password) { setError("Preencha e-mail e senha"); return; }
+        const res = API.login(email, password);
+        if (res.error) { setError(res.error); return; }
+        onSuccess(res.user);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: "linear-gradient(135deg, #050507 0%, #0A0A14 50%, #050507 100%)", display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }}>
+      <div style={{ background: "#0A0A14", border: "1px solid #14141F", borderRadius: "20px", padding: "48px 40px", width: "100%", maxWidth: "420px", boxShadow: "0 25px 80px rgba(0,0,0,.6)", backdropFilter: "blur(10px)" }}>
+        <div style={{ textAlign: "center", marginBottom: "36px" }}>
+          <div style={{ fontFamily: "Bebas Neue, sans-serif", fontSize: "48px", letterSpacing: ".1em", background: "linear-gradient(135deg, #fff, #FF2D55, #FF6B00)", backgroundClip: "text", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", marginBottom: "10px" }}>CLIPZAP</div>
+          <p style={{ fontSize: "12px", color: "#FF2D55", textTransform: "uppercase", letterSpacing: ".15em", fontWeight: 800, marginBottom: "6px" }}>Studio Pro v2</p>
+          <p style={{ fontSize: "14px", color: "#aaa" }}>{isSignup ? "Crie sua conta" : "Bem-vindo de volta"}</p>
+        </div>
+
+        <form onSubmit={handleSubmit} style={{ marginBottom: "28px" }}>
+          {isSignup && (
+            <div style={{ marginBottom: "18px", display: "flex", flexDirection: "column", gap: "8px" }}>
+              <label style={{ fontSize: "12px", fontWeight: 700, textTransform: "uppercase", color: "#1A1A28" }}>Nome</label>
+              <input type="text" placeholder="Seu nome" value={name} onChange={(e) => setName(e.target.value)} style={{ background: "#050507", border: "1px solid #14141F", borderRadius: "12px", padding: "13px 16px", color: "#F5F5F8", fontSize: "14px", outline: "none" }} />
+            </div>
+          )}
+          <div style={{ marginBottom: "18px", display: "flex", flexDirection: "column", gap: "8px" }}>
+            <label style={{ fontSize: "12px", fontWeight: 700, textTransform: "uppercase", color: "#1A1A28" }}>E-mail</label>
+            <input type="email" placeholder="seu@email.com" value={email} onChange={(e) => setEmail(e.target.value)} style={{ background: "#050507", border: "1px solid #14141F", borderRadius: "12px", padding: "13px 16px", color: "#F5F5F8", fontSize: "14px", outline: "none" }} />
+          </div>
+          <div style={{ marginBottom: "18px", display: "flex", flexDirection: "column", gap: "8px" }}>
+            <label style={{ fontSize: "12px", fontWeight: 700, textTransform: "uppercase", color: "#1A1A28" }}>Senha</label>
+            <input type="password" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} style={{ background: "#050507", border: "1px solid #14141F", borderRadius: "12px", padding: "13px 16px", color: "#F5F5F8", fontSize: "14px", outline: "none" }} />
+          </div>
+          {error && <div style={{ background: "#FF2D5515", border: "1px solid #FF2D5535", color: "#FF5566", padding: "12px 14px", borderRadius: "10px", fontSize: "12px", marginBottom: "16px" }}>⚠️ {error}</div>}
+          <button type="submit" style={{ width: "100%", padding: "14px", background: "linear-gradient(135deg, #FF2D55, #FF6B00)", border: "none", borderRadius: "12px", color: "#fff", fontSize: "14px", fontWeight: 800, cursor: "pointer", boxShadow: "0 8px 24px rgba(255,45,85,.3)" }} disabled={loading}>
+            {loading ? "Processando..." : isSignup ? "Criar Conta" : "Entrar"}
+          </button>
+        </form>
+
+        <div style={{ textAlign: "center", fontSize: "13px", color: "#3A3A4A", marginBottom: "24px" }}>
+          {isSignup ? (
+            <>Já tem? <button onClick={() => setIsSignup(false)} style={{ background: "none", border: "none", color: "#FF2D55", cursor: "pointer", fontWeight: 700, textDecoration: "underline" }}>Entrar</button></>
+          ) : (
+            <>Novo? <button onClick={() => setIsSignup(true)} style={{ background: "none", border: "none", color: "#FF2D55", cursor: "pointer", fontWeight: 700, textDecoration: "underline" }}>Criar</button></>
+          )}
+        </div>
+
+        <div style={{ background: "linear-gradient(135deg, #FF2D5510, #FF6B0010)", border: "1px solid #FF2D5530", borderRadius: "12px", padding: "16px", fontSize: "12px" }}>
+          <div style={{ fontWeight: 700, color: "#FF2D55", marginBottom: "8px" }}>⚡ Teste:</div>
+          <div style={{ color: "#aaa", margin: "4px 0" }}>📧 <code style={{ background: "#050507", padding: "2px 7px", borderRadius: "5px", color: "#FFD700" }}>demo@clipzap.com</code></div>
+          <div style={{ color: "#aaa", margin: "4px 0" }}>🔑 <code style={{ background: "#050507", padding: "2px 7px", borderRadius: "5px", color: "#FFD700" }}>123456</code></div>
+          <button onClick={() => { setEmail("demo@clipzap.com"); setPassword("123456"); }} style={{ width: "100%", marginTop: "10px", padding: "8px", background: "transparent", border: "1px solid #FF2D5540", borderRadius: "8px", color: "#FF2D55", fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>Auto-preencher</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Dashboard({ user, onLogout, onOpenProject }) {
+  const [projects, setProjects] = useState(API.getProjects());
+  const [showNew, setShowNew] = useState(false);
+  const [projName, setProjName] = useState("");
+
+  const createProject = () => {
+    if (!projName.trim()) return;
+    const res = API.saveProject({ name: projName, title: "", subtitles: [], language: "pt", captionStyle: "white" });
+    setProjects(API.getProjects());
+    setProjName("");
+    setShowNew(false);
+    onOpenProject(res.projectId);
+  };
+
+  const deleteProject = (id) => {
+    if (confirm("Deletar?")) {
+      API.deleteProject(id);
+      setProjects(API.getProjects());
+    }
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: "linear-gradient(180deg, #050507 0%, #0A0A14 50%, #050507 100%)" }}>
+      <div style={{ background: "#0A0A14", borderBottom: "1px solid #14141F", padding: "20px 0", position: "sticky", top: 0, zIndex: 100 }}>
+        <div style={{ maxWidth: "1300px", margin: "0 auto", padding: "0 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontFamily: "Bebas Neue", fontSize: "28px", letterSpacing: ".1em", background: "linear-gradient(135deg, #fff, #FF2D55)", backgroundClip: "text", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>CLIPZAP</div>
+          <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontWeight: 700, color: "#ddd" }}>{user.name}</div>
+              <div style={{ color: "#3A3A4A", fontSize: "11px", marginTop: "2px" }}>⭐ {user.credits}</div>
+            </div>
+            <button onClick={onLogout} style={{ padding: "9px 18px", background: "#FF2D5520", border: "1px solid #FF2D5540", borderRadius: "10px", color: "#FF2D55", fontSize: "12px", fontWeight: 700, cursor: "pointer" }}>Sair</button>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ maxWidth: "1300px", margin: "0 auto", padding: "48px 24px" }}>
+        <h1 style={{ fontSize: "32px", fontWeight: 800, marginBottom: "8px", color: "#ddd" }}>Bem-vindo, {user.name.split(" ")[0]}! 👋</h1>
+        <p style={{ color: "#3A3A4A", fontSize: "15px", marginBottom: "36px" }}>Crie novos projetos ou continue editando</p>
+
+        <div style={{ background: "#0A0A14", border: "2px solid #14141F", borderRadius: "16px", padding: "24px", marginBottom: "32px", display: "flex", gap: "14px", alignItems: "center" }}>
+          {!showNew ? (
+            <>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 700, color: "#ddd" }}>Novo projeto</div>
+                <div style={{ fontSize: 12, color: "#3A3A4A" }}>Começar a editar um vídeo</div>
+              </div>
+              <button onClick={() => setShowNew(true)} style={{ padding: "13px 28px", background: "linear-gradient(135deg, #FF2D55, #FF6B00)", border: "none", borderRadius: "12px", color: "#fff", fontWeight: 800, cursor: "pointer" }}>+ Novo</button>
+            </>
+          ) : (
+            <>
+              <input placeholder="Nome..." value={projName} onChange={(e) => setProjName(e.target.value)} style={{ flex: 1, background: "#050507", border: "1px solid #14141F", borderRadius: "12px", padding: "13px 16px", color: "#F5F5F8", outline: "none" }} autoFocus onKeyDown={(e) => { if (e.key === "Enter") createProject(); if (e.key === "Escape") setShowNew(false); }} />
+              <button onClick={createProject} style={{ padding: "13px 28px", background: "linear-gradient(135deg, #FF2D55, #FF6B00)", border: "none", borderRadius: "12px", color: "#fff", fontWeight: 800, cursor: "pointer" }}>✓</button>
+            </>
+          )}
+        </div>
+
+        {projects.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "80px 20px" }}>
+            <div style={{ fontSize: "56px", marginBottom: "16px" }}>🎬</div>
+            <div style={{ fontSize: 14, color: "#3A3A4A" }}>Nenhum projeto. Crie um!</div>
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "18px" }}>
+            {projects.map((p) => (
+              <div key={p.id} style={{ background: "#0A0A14", border: "1px solid #14141F", borderRadius: "16px", padding: "20px", display: "flex", flexDirection: "column", gap: "14px" }}>
+                <div style={{ fontSize: "32px" }}>🎬</div>
+                <div>
+                  <div style={{ fontSize: "15px", fontWeight: 700, color: "#ddd" }}>{p.name}</div>
+                  <div style={{ fontSize: "11px", color: "#1A1A28" }}>{new Date(p.createdAt).toLocaleDateString("pt-BR")}</div>
+                </div>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button onClick={() => onOpenProject(p.id)} style={{ flex: 1, padding: "8px", background: "transparent", border: "1px solid #14141F", borderRadius: "8px", color: "#3A3A4A", fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>✏️ Editar</button>
+                  <button onClick={() => deleteProject(p.id)} style={{ flex: 1, padding: "8px", background: "transparent", border: "1px solid #14141F", borderRadius: "8px", color: "#3A3A4A", fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>🗑️ Deletar</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Studio({ projectId, user, onBack }) {
+  const [videoTitle, setVideoTitle] = useState("Como ganhar dinheiro com TikTok");
+  const [currentTime, setCurrentTime] = useState(0);
+  const [subtitles, setSubtitles] = useState([]);
+  const [selectedLang, setSelectedLang] = useState("pt");
+  const [captionStyle, setCaptionStyle] = useState("white");
+  const [videos] = useState(DEMO_VIDEOS);
+  const [videoSelected, setVideoSelected] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const selectVideo = async (video) => {
+    setVideoTitle(video.title);
+    setVideoSelected(true);
+    setLoading(true);
+    setCurrentTime(0);
+    
+    const subs = await generateSubtitles(video.title, selectedLang);
+    setSubtitles(subs.length > 0 ? subs : [
+      { start: 0, end: 5, text: "Olá! Bem-vindo ao vídeo de hoje" },
+      { start: 5, end: 10, text: "Vou te mostrar como ter sucesso" },
+      { start: 10, end: 15, text: "Seguindo estas estratégias simples" },
+      { start: 15, end: 20, text: "Você vai conseguir ótimos resultados" },
+    ]);
+    setLoading(false);
+  };
+
+  const handleDownload = () => {
+    downloadProject(videoTitle, subtitles, selectedLang, captionStyle);
+    alert("✅ Projeto exportado! Baixe para continuar editando.");
+  };
+
+  const currentSub = subtitles.find((s) => currentTime >= s.start && currentTime <= s.end);
+  const style = CAPTIONS.find((s) => s.id === captionStyle);
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#050507" }}>
+      <div style={{ background: "#0A0A14", borderBottom: "1px solid #14141F", padding: "16px 24px", display: "flex", justifyContent: "space-between", alignItems: "center", position: "sticky", top: 0, zIndex: 100 }}>
+        <div style={{ fontSize: "16px", fontWeight: 700, color: "#ddd" }}>🎬 Studio</div>
+        <button onClick={onBack} style={{ padding: "8px 16px", background: "transparent", border: "1px solid #14141F", borderRadius: "10px", color: "#3A3A4A", fontSize: "12px", fontWeight: 700, cursor: "pointer" }}>← Voltar</button>
+      </div>
+
+      <div style={{ maxWidth: "1400px", margin: "0 auto", padding: "24px", display: "grid", gridTemplateColumns: "1fr 340px", gap: "20px" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+          {/* Videos */}
+          <div style={{ background: "#0A0A14", border: "1px solid #14141F", borderRadius: "16px", padding: "16px" }}>
+            <p style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", color: "#1A1A28", marginBottom: "12px" }}>🎯 Vídeos</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              {videos.map((v) => (
+                <div key={v.id} onClick={() => selectVideo(v)} style={{ background: "#050507", border: "1px solid #14141F", borderRadius: "12px", padding: "12px", cursor: "pointer", display: "flex", gap: "12px", alignItems: "center" }}>
+                  <div style={{ fontSize: "24px" }}>{v.thumbnail}</div>
+                  <div>
+                    <div style={{ fontSize: "12px", fontWeight: 700, color: "#ddd" }}>{v.title.substring(0, 30)}...</div>
+                    <div style={{ fontSize: "10px", color: "#1A1A28" }}>{v.channel}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Player */}
+          {videoSelected && (
+            <div style={{ background: "#0A0A14", border: "1px solid #14141F", borderRadius: "16px", overflow: "hidden" }}>
+              <div style={{ background: "linear-gradient(135deg, #1A1A28, #0A0A12)", aspectRatio: "16/9", display: "flex", alignItems: "center", justifyContent: "center", position: "relative", fontSize: "48px" }}>
+                📹
+                {currentSub && (
+                  <div style={{ position: "absolute", bottom: "24px", left: "50%", transform: "translateX(-50%)", padding: "14px 20px", borderRadius: "10px", fontSize: "15px", fontWeight: 700, maxWidth: "90%", textAlign: "center", whiteSpace: "normal", background: style?.bg, color: style?.text, animation: "slideUp .3s" }}>
+                    {currentSub.text}
+                  </div>
+                )}
+              </div>
+              <div style={{ padding: "16px", borderTop: "1px solid #14141F" }}>
+                <input type="range" min="0" max="60" value={currentTime} onChange={(e) => setCurrentTime(Number(e.target.value))} style={{ width: "100%", height: "5px", background: "#14141F", borderRadius: "4px", outline: "none", marginBottom: "10px", cursor: "pointer" }} />
+                <div style={{ display: "flex", gap: "8px", fontSize: "12px", color: "#3A3A4A", justifyContent: "center" }}>
+                  <span>{formatTime(currentTime)}</span> / <span>1:00</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Controls */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          <div style={{ background: "#0A0A14", border: "1px solid #14141F", borderRadius: "16px", padding: "14px" }}>
+            <p style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", color: "#1A1A28", marginBottom: "12px" }}>🌐 Idioma</p>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "7px" }}>
+              {LANGUAGES.map((l) => (
+                <button key={l.code} onClick={() => setSelectedLang(l.code)} style={{ padding: "10px", background: selectedLang === l.code ? "#FF2D5515" : "transparent", border: selectedLang === l.code ? "1px solid #FF2D5540" : "1px solid #14141F", borderRadius: "10px", color: selectedLang === l.code ? "#FF2D55" : "#3A3A4A", fontSize: "10px", fontWeight: 700, cursor: "pointer", textAlign: "center" }}>
+                  <div style={{ fontSize: "16px" }}>{l.flag}</div>{l.name.split(" ")[0]}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ background: "#0A0A14", border: "1px solid #14141F", borderRadius: "16px", padding: "14px" }}>
+            <p style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", color: "#1A1A28", marginBottom: "12px" }}>💬 Estilo</p>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "7px" }}>
+              {CAPTIONS.map((c) => (
+                <button key={c.id} onClick={() => setCaptionStyle(c.id)} style={{ padding: "10px", background: captionStyle === c.id ? "#FF2D5515" : "transparent", border: captionStyle === c.id ? "1px solid #FF2D5540" : "1px solid #14141F", borderRadius: "10px", color: captionStyle === c.id ? "#FF2D55" : "#3A3A4A", fontSize: "10px", fontWeight: 700, cursor: "pointer" }}>
+                  {c.icon}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <button onClick={handleDownload} disabled={!videoSelected || loading} style={{ width: "100%", padding: "12px", background: "linear-gradient(135deg, #FF2D55, #FF6B00)", border: "none", borderRadius: "12px", color: "#fff", fontWeight: 800, cursor: "pointer", opacity: !videoSelected || loading ? 0.5 : 1 }}>
+            {loading ? "⏳ Gerando..." : "💾 Exportar"}
+          </button>
+
+          <div style={{ background: "#0A0A14", border: "1px solid #14141F", borderRadius: "12px", padding: "12px", fontSize: "12px", color: "#aaa", lineHeight: 1.6 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", paddingBottom: "6px", borderBottom: "1px solid #14141F" }}>
+              <span>📝 Legendas</span>
+              <strong style={{ color: "#FF2D55" }}>{subtitles.length}</strong>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", paddingBottom: "6px", borderBottom: "1px solid #14141F", marginTop: "6px" }}>
+              <span>🌐 Idioma</span>
+              <strong>{LANGUAGES.find(l => l.code === selectedLang)?.name}</strong>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", paddingTop: "6px", marginTop: "6px" }}>
+              <span>⭐ Créditos</span>
+              <strong style={{ color: "#FFD700" }}>{user.credits}</strong>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <style>{`
+        @keyframes slideUp {
+          from { opacity: 0; transform: translateX(-50%) translateY(20px); }
+          to { opacity: 1; transform: translateX(-50%) translateY(0); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MAIN APP
+// ═══════════════════════════════════════════════════════════════════════════
+
+function App() {
+  const [user, setUser] = useState(API.getCurrentUser());
+  const [project, setProject] = useState(null);
+
+  useEffect(() => {
+    const users = JSON.parse(localStorage.getItem("clipzap_users") || "{}");
+    if (!users["demo@clipzap.com"]) API.signup("demo@clipzap.com", "123456", "Demo User");
+  }, []);
+
+  if (!user) return <LoginPage onSuccess={(u) => setUser(u)} />;
+  if (project) return <Studio projectId={project} user={user} onBack={() => setProject(null)} />;
+  return <Dashboard user={user} onLogout={() => { API.logout(); setUser(null); }} onOpenProject={(p) => setProject(p)} />;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+    </script>
+</body>
+</html>
