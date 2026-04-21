@@ -12,6 +12,9 @@
         html, body { width: 100%; height: 100%; }
         body { font-family: 'Plus Jakarta Sans', sans-serif; background: #050507; color: #F5F5F8; }
         #root { width: 100%; }
+        /* Esconder scrollbar para área de vídeos */
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
     </style>
 </head>
 <body>
@@ -69,13 +72,13 @@ const API = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// CLAUDE API - TRANSCRIÇÃO
+// CLAUDE API - TRANSCRIÇÃO (Mock/Simulação para Frontend)
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function generateSubtitles(videoTitle, language = "pt") {
   try {
     const langMap = { pt: "português", en: "english", es: "español", de: "deutsch", ru: "русский" };
-    const prompt = `Gere legendas REALISTAS para um vídeo com título: "${videoTitle}"
+    const prompt = `Gere legendas REALISTAS para um vídeo com título ou URL: "${videoTitle}"
 
 Responda APENAS com JSON válido:
 {
@@ -103,8 +106,14 @@ Crie 8-12 legendas em ${langMap[language] || "português"}, naturais e realistas
     const parsed = JSON.parse(clean);
     return parsed.subtitles || [];
   } catch (e) {
-    console.error("Erro ao gerar legendas:", e);
-    return [];
+    console.warn("API não configurada, retornando legendas simuladas.", e);
+    // Retorno de fallback caso a API falhe (o que vai acontecer sem a chave da API)
+    return [
+      { start: 0, end: 4, text: "Bem-vindo a este vídeo incrível!" },
+      { start: 4, end: 8, text: "Hoje vamos aprender algo novo." },
+      { start: 8, end: 12, text: "Preste muita atenção nos detalhes..." },
+      { start: 12, end: 16, text: "E não se esqueça de se inscrever." },
+    ];
   }
 }
 
@@ -140,6 +149,13 @@ const CAPTIONS = [
 function formatTime(s) {
   const m = Math.floor(s / 60);
   return `${m}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+}
+
+// Extrai ID do YouTube se a URL for do YouTube
+function getYouTubeID(url) {
+  const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+  const match = url.match(regExp);
+  return (match && match[2].length === 11) ? match[2] : null;
 }
 
 function downloadProject(projectName, subtitles, language, style) {
@@ -339,12 +355,19 @@ function Studio({ projectId, user, onBack }) {
   const [selectedLang, setSelectedLang] = useState("pt");
   const [captionStyle, setCaptionStyle] = useState("white");
   const [videos] = useState(DEMO_VIDEOS);
+  
+  // Novos estados para suportar URL externa
+  const [customUrl, setCustomUrl] = useState("");
+  const [activeVideoSrc, setActiveVideoSrc] = useState(null);
+  const [videoType, setVideoType] = useState("demo"); // 'demo', 'mp4', 'youtube'
   const [videoSelected, setVideoSelected] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const selectVideo = async (video) => {
     setVideoTitle(video.title);
     setVideoSelected(true);
+    setVideoType("demo");
+    setActiveVideoSrc(null);
     setLoading(true);
     setCurrentTime(0);
     
@@ -355,6 +378,36 @@ function Studio({ projectId, user, onBack }) {
       { start: 10, end: 15, text: "Seguindo estas estratégias simples" },
       { start: 15, end: 20, text: "Você vai conseguir ótimos resultados" },
     ]);
+    setLoading(false);
+  };
+
+  const loadCustomUrl = async () => {
+    if (!customUrl.trim()) return;
+    
+    setLoading(true);
+    setCurrentTime(0);
+    setVideoTitle("Vídeo Importado");
+    
+    const ytId = getYouTubeID(customUrl);
+    if (ytId) {
+      setVideoType("youtube");
+      setActiveVideoSrc(`https://www.youtube.com/embed/${ytId}?autoplay=1&controls=0`);
+    } else {
+      setVideoType("mp4");
+      setActiveVideoSrc(customUrl);
+    }
+    
+    setVideoSelected(true);
+    
+    // Simula a geração de legendas para o vídeo customizado
+    const subs = await generateSubtitles("Vídeo Personalizado: " + customUrl, selectedLang);
+    setSubtitles(subs.length > 0 ? subs : [
+      { start: 0, end: 4, text: "Analisando seu vídeo inserido..." },
+      { start: 4, end: 8, text: "As legendas serão sincronizadas." },
+      { start: 8, end: 12, text: "Isso é apenas uma demonstração." },
+    ]);
+    
+    setCustomUrl("");
     setLoading(false);
   };
 
@@ -375,15 +428,36 @@ function Studio({ projectId, user, onBack }) {
 
       <div style={{ maxWidth: "1400px", margin: "0 auto", padding: "24px", display: "grid", gridTemplateColumns: "1fr 340px", gap: "20px" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
-          {/* Videos */}
+          
+          {/* Sessão de Importar URL */}
           <div style={{ background: "#0A0A14", border: "1px solid #14141F", borderRadius: "16px", padding: "16px" }}>
-            <p style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", color: "#1A1A28", marginBottom: "12px" }}>🎯 Vídeos</p>
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+            <p style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", color: "#1A1A28", marginBottom: "12px" }}>🔗 Importar Vídeo</p>
+            <div style={{ display: "flex", gap: "10px" }}>
+              <input 
+                type="text" 
+                placeholder="Cole a URL de um .mp4 ou do YouTube..." 
+                value={customUrl} 
+                onChange={(e) => setCustomUrl(e.target.value)} 
+                style={{ flex: 1, background: "#050507", border: "1px solid #14141F", borderRadius: "10px", padding: "12px", color: "#F5F5F8", fontSize: "13px", outline: "none" }} 
+              />
+              <button 
+                onClick={loadCustomUrl} 
+                disabled={!customUrl.trim() || loading}
+                style={{ padding: "0 20px", background: "linear-gradient(135deg, #FF2D55, #FF6B00)", border: "none", borderRadius: "10px", color: "#fff", fontWeight: 700, cursor: "pointer", opacity: !customUrl.trim() || loading ? 0.5 : 1 }}>
+                Carregar
+              </button>
+            </div>
+          </div>
+
+          {/* Videos de Demo */}
+          <div style={{ background: "#0A0A14", border: "1px solid #14141F", borderRadius: "16px", padding: "16px" }}>
+            <p style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", color: "#1A1A28", marginBottom: "12px" }}>🎯 Vídeos de Demonstração</p>
+            <div style={{ display: "flex", overflowX: "auto", gap: "10px", paddingBottom: "8px" }} className="no-scrollbar">
               {videos.map((v) => (
-                <div key={v.id} onClick={() => selectVideo(v)} style={{ background: "#050507", border: "1px solid #14141F", borderRadius: "12px", padding: "12px", cursor: "pointer", display: "flex", gap: "12px", alignItems: "center" }}>
+                <div key={v.id} onClick={() => selectVideo(v)} style={{ background: "#050507", border: "1px solid #14141F", borderRadius: "12px", padding: "12px", cursor: "pointer", display: "flex", gap: "12px", alignItems: "center", minWidth: "250px" }}>
                   <div style={{ fontSize: "24px" }}>{v.thumbnail}</div>
                   <div>
-                    <div style={{ fontSize: "12px", fontWeight: 700, color: "#ddd" }}>{v.title.substring(0, 30)}...</div>
+                    <div style={{ fontSize: "12px", fontWeight: 700, color: "#ddd", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", width: "180px" }}>{v.title}</div>
                     <div style={{ fontSize: "10px", color: "#1A1A28" }}>{v.channel}</div>
                   </div>
                 </div>
@@ -391,31 +465,62 @@ function Studio({ projectId, user, onBack }) {
             </div>
           </div>
 
-          {/* Player */}
+          {/* Player de Vídeo */}
           {videoSelected && (
             <div style={{ background: "#0A0A14", border: "1px solid #14141F", borderRadius: "16px", overflow: "hidden" }}>
-              <div style={{ background: "linear-gradient(135deg, #1A1A28, #0A0A12)", aspectRatio: "16/9", display: "flex", alignItems: "center", justifyContent: "center", position: "relative", fontSize: "48px" }}>
-                📹
+              <div style={{ background: "linear-gradient(135deg, #1A1A28, #0A0A12)", aspectRatio: "16/9", display: "flex", alignItems: "center", justifyContent: "center", position: "relative", fontSize: "48px", overflow: "hidden" }}>
+                
+                {/* Renderização condicional do Player Baseado no Tipo */}
+                {videoType === "mp4" && (
+                  <video 
+                    src={activeVideoSrc} 
+                    controls 
+                    autoPlay
+                    onTimeUpdate={(e) => setCurrentTime(e.target.currentTime)}
+                    style={{ width: "100%", height: "100%", objectFit: "cover" }} 
+                  />
+                )}
+
+                {videoType === "youtube" && (
+                  <iframe 
+                    src={activeVideoSrc} 
+                    frameBorder="0" 
+                    allow="autoplay; encrypted-media" 
+                    allowFullScreen 
+                    style={{ width: "100%", height: "100%", position: "absolute", top: 0, left: 0 }}
+                  ></iframe>
+                )}
+
+                {videoType === "demo" && (
+                  <span>📹</span>
+                )}
+
+                {/* Camada de Legendas sobre o Vídeo */}
                 {currentSub && (
-                  <div style={{ position: "absolute", bottom: "24px", left: "50%", transform: "translateX(-50%)", padding: "14px 20px", borderRadius: "10px", fontSize: "15px", fontWeight: 700, maxWidth: "90%", textAlign: "center", whiteSpace: "normal", background: style?.bg, color: style?.text, animation: "slideUp .3s" }}>
+                  <div style={{ position: "absolute", bottom: "10%", left: "50%", transform: "translateX(-50%)", padding: "14px 20px", borderRadius: "10px", fontSize: "18px", fontWeight: 800, maxWidth: "80%", textAlign: "center", whiteSpace: "normal", background: style?.bg, color: style?.text, animation: "slideUp .3s", pointerEvents: "none", zIndex: 10 }}>
                     {currentSub.text}
                   </div>
                 )}
               </div>
-              <div style={{ padding: "16px", borderTop: "1px solid #14141F" }}>
-                <input type="range" min="0" max="60" value={currentTime} onChange={(e) => setCurrentTime(Number(e.target.value))} style={{ width: "100%", height: "5px", background: "#14141F", borderRadius: "4px", outline: "none", marginBottom: "10px", cursor: "pointer" }} />
-                <div style={{ display: "flex", gap: "8px", fontSize: "12px", color: "#3A3A4A", justifyContent: "center" }}>
-                  <span>{formatTime(currentTime)}</span> / <span>1:00</span>
+              
+              {/* Controles de Slider (Apenas para Demo ou YouTube, pois MP4 tem seu proprio timeUpdate) */}
+              {(videoType === "demo" || videoType === "youtube") && (
+                <div style={{ padding: "16px", borderTop: "1px solid #14141F" }}>
+                  <input type="range" min="0" max="60" value={currentTime} onChange={(e) => setCurrentTime(Number(e.target.value))} style={{ width: "100%", height: "5px", background: "#14141F", borderRadius: "4px", outline: "none", marginBottom: "10px", cursor: "pointer" }} />
+                  <div style={{ display: "flex", gap: "8px", fontSize: "12px", color: "#3A3A4A", justifyContent: "center" }}>
+                    <span>{formatTime(currentTime)}</span> / <span>1:00</span>
+                    {videoType === "youtube" && <span style={{color: "#FF2D55", marginLeft: "10px"}}>(Use o slider para simular o tempo no YouTube)</span>}
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           )}
         </div>
 
-        {/* Controls */}
+        {/* Controles Laterais */}
         <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
           <div style={{ background: "#0A0A14", border: "1px solid #14141F", borderRadius: "16px", padding: "14px" }}>
-            <p style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", color: "#1A1A28", marginBottom: "12px" }}>🌐 Idioma</p>
+            <p style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", color: "#1A1A28", marginBottom: "12px" }}>🌐 Idioma da Legenda</p>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "7px" }}>
               {LANGUAGES.map((l) => (
                 <button key={l.code} onClick={() => setSelectedLang(l.code)} style={{ padding: "10px", background: selectedLang === l.code ? "#FF2D5515" : "transparent", border: selectedLang === l.code ? "1px solid #FF2D5540" : "1px solid #14141F", borderRadius: "10px", color: selectedLang === l.code ? "#FF2D55" : "#3A3A4A", fontSize: "10px", fontWeight: 700, cursor: "pointer", textAlign: "center" }}>
@@ -430,7 +535,7 @@ function Studio({ projectId, user, onBack }) {
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "7px" }}>
               {CAPTIONS.map((c) => (
                 <button key={c.id} onClick={() => setCaptionStyle(c.id)} style={{ padding: "10px", background: captionStyle === c.id ? "#FF2D5515" : "transparent", border: captionStyle === c.id ? "1px solid #FF2D5540" : "1px solid #14141F", borderRadius: "10px", color: captionStyle === c.id ? "#FF2D55" : "#3A3A4A", fontSize: "10px", fontWeight: 700, cursor: "pointer" }}>
-                  {c.icon}
+                  {c.icon} {c.name}
                 </button>
               ))}
             </div>
@@ -442,7 +547,7 @@ function Studio({ projectId, user, onBack }) {
 
           <div style={{ background: "#0A0A14", border: "1px solid #14141F", borderRadius: "12px", padding: "12px", fontSize: "12px", color: "#aaa", lineHeight: 1.6 }}>
             <div style={{ display: "flex", justifyContent: "space-between", paddingBottom: "6px", borderBottom: "1px solid #14141F" }}>
-              <span>📝 Legendas</span>
+              <span>📝 Legendas Geradas</span>
               <strong style={{ color: "#FF2D55" }}>{subtitles.length}</strong>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", paddingBottom: "6px", borderBottom: "1px solid #14141F", marginTop: "6px" }}>
@@ -450,7 +555,7 @@ function Studio({ projectId, user, onBack }) {
               <strong>{LANGUAGES.find(l => l.code === selectedLang)?.name}</strong>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", paddingTop: "6px", marginTop: "6px" }}>
-              <span>⭐ Créditos</span>
+              <span>⭐ Seus Créditos</span>
               <strong style={{ color: "#FFD700" }}>{user.credits}</strong>
             </div>
           </div>
